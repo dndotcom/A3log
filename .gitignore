@@ -1,0 +1,16 @@
+# Arquivos de sistema e IDE
+.DS_Store
+.vscode/
+.idea/
+
+# Backups e arquivos temporários
+index_original.php
+*.bak
+*.swp
+*~
+
+# Logs e Caches de aplicação
+*.log
+modsec_audit.json
+metrics_analysis_*.json
+request_results_*.json
