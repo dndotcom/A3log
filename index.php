@@ -15,6 +15,14 @@ require_once __DIR__ . '/functions.php';
 @header('Pragma: no-cache');
 @header('Expires: 0');
 
+// DIAGNÓSTICO DE PERMISSÕES
+if (!is_writable(__DIR__)) {
+    echo '<div style="background:#dc3545;color:white;padding:15px;text-align:center;font-family:sans-serif;">';
+    echo '<strong>ERRO CRÍTICO:</strong> O servidor web não tem permissão de escrita nesta pasta (' . __DIR__ . ').<br>';
+    echo 'Os arquivos de log e cache não podem ser criados.<br><br>';
+    echo 'Execute no terminal: <code style="background:rgba(0,0,0,0.3);padding:2px 5px;border-radius:3px;">sudo chown -R www-data:www-data ' . __DIR__ . ' && sudo chmod -R 775 ' . __DIR__ . '</code>';
+    echo '</div>';
+}
 
 // 2. Inicialização de variáveis
 $exibirLogs = [];
@@ -60,7 +68,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!empty($_POST['ip_filtro']) || !empty($_POST['data_inicio']) || !empty($_POST['data_fim'])) {
             $ip = trim($_POST['ip_filtro'] ?? '');
             $filtrar = true;
-
+            
             // Valida formato do IP (se fornecido)
             if (!empty($ip) && !filter_var($ip, FILTER_VALIDATE_IP) && !preg_match('/^\d+\.\d+\.\d+\.\d+$/', $ip)) {
                 // IP inválido
@@ -98,25 +106,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     if ($titulo === 'ModSec Log') {
                         $conteudoRaw = lerLogRaw($arquivo, MAX_LINHAS_LER);
                         if ($conteudoRaw !== false && $conteudoRaw !== '') {
-                            $eventos = parseModSecLog($conteudoRaw);
-                            $modSecDataRaw = [
-                                'eventos' => $eventos,
-                                'total' => count($eventos),
-                                'timestamp' => time()
-                            ];
+                            // Tenta usar cache se disponível
+                            $usarCache = false;
+                            if (file_exists(JSON_PATH)) {
+                                // Se o JSON for mais recente que o log, usa o cache (simplificação)
+                                // Idealmente compararia tamanho/hash, mas mtime ajuda
+                                if (filemtime(JSON_PATH) >= filemtime($arquivo)) {
+                                    $jsonContent = file_get_contents(JSON_PATH);
+                                    $eventos = json_decode($jsonContent, true);
+                                    if (is_array($eventos)) $usarCache = true;
+                                }
+                            }
+
+                            if (!$usarCache) {
+                                $eventos = parseModSecLog($conteudoRaw);
+                                // Salva TODOS os eventos no cache antes de filtrar/cortar
+                                file_put_contents(JSON_PATH, json_encode($eventos), LOCK_EX);
+                            }
                         } else {
-                            $modSecDataRaw = ['eventos' => [], 'total' => 0];
+                            $eventos = [];
                         }
 
-                        if (!empty($modSecDataRaw['eventos'])) {
-                            $totalAntesFiltro = count($modSecDataRaw['eventos']);
+                        $modSecDataRaw = ['eventos' => $eventos];
+
+                        if (!empty($eventos)) {
+                            $totalAntesFiltro = count($eventos);
                             $semTimestampTotal = 0;
-                            foreach ($modSecDataRaw['eventos'] as $eid => $secs0) {
+                            foreach ($eventos as $eid => $secs0) {
                                 if (extrairTimestampModSec($secs0) === 0) $semTimestampTotal++;
                             }
 
                             $semTimestampSemJanela = 0;
-                            $eventosFiltrados = filtrarModSecPorIP($modSecDataRaw['eventos'], $ip, $dataInicio, $dataFim, $semTimestampSemJanela);
+                            $eventosFiltrados = filtrarModSecPorIP($eventos, $ip, $dataInicio, $dataFim, $semTimestampSemJanela);
                             $resultadosFiltro[$titulo] = [
                                 'eventos' => $eventosFiltrados,
                                 'total' => count($eventosFiltrados),
@@ -178,22 +199,38 @@ if (!$filtrar) {
     if ($exibirLogs['ModSec Log']) {
         $conteudoRaw = lerLogRaw($logs['ModSec Log'], MAX_LINHAS_LER);
         if ($conteudoRaw !== false) {
-            $eventos = parseModSecLog($conteudoRaw);
+            // Lógica de Cache na visualização padrão
+            $usarCache = false;
+            if (file_exists(JSON_PATH) && file_exists($logs['ModSec Log'])) {
+                if (filemtime(JSON_PATH) >= filemtime($logs['ModSec Log'])) {
+                    $jsonContent = file_get_contents(JSON_PATH);
+                    $eventos = json_decode($jsonContent, true);
+                    if (is_array($eventos)) $usarCache = true;
+                }
+            }
+
+            if (!$usarCache) {
+                $eventos = parseModSecLog($conteudoRaw);
+                // Salva cache completo
+                if (!empty($eventos)) {
+                    file_put_contents(JSON_PATH, json_encode($eventos), LOCK_EX);
+                }
+            }
+
             $limiteTelaInicial = 50;
             $totalEventos = count($eventos);
+            
+            // Corta APENAS para exibição, mantendo $eventos original no cache se foi gerado agora
+            $eventosExibicao = $eventos;
             if ($totalEventos > $limiteTelaInicial) {
-                $eventos = array_slice($eventos, 0, $limiteTelaInicial, true);
+                $eventosExibicao = array_slice($eventos, 0, $limiteTelaInicial, true);
             }
             $modSecData = [
-                'eventos' => $eventos,
+                'eventos' => $eventosExibicao,
                 'total' => $totalEventos,
-                'exibindo' => count($eventos),
+                'exibindo' => count($eventosExibicao),
                 'timestamp' => time()
             ];
-            if (!empty($eventos)) {
-                $jsonData = json_encode($eventos, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
-                @file_put_contents(JSON_PATH, $jsonData, LOCK_EX);
-            }
         }
     }
 }

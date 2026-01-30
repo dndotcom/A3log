@@ -57,7 +57,7 @@ function parseTimestamp(string $str): int
     }
 
     // fallback para strtotime
-    $t = @strtotime($str);
+    $t = @strtotime(trim($str));
     return $t !== false ? $t : 0;
 }
 
@@ -435,9 +435,11 @@ function correlacionarEventosLado(string $accessLog, string $errorLog, array $mo
     $ev = [];
 
     // regex para capturar timestamp no access
-    $regexAccess = '/\[(\d{2}\/[A-Za-z]{3}\/\d{4}:\d{2}:\d{2}:\d{2}(?: [+\-]\d{4})?)\]/';
+    // Atualizado para ser mais permissivo (com ou sem colchetes)
+    $regexAccess = '/(?:\[)?(\d{2}\/[A-Za-z]{3}\/\d{4}:\d{2}:\d{2}:\d{2}(?: [+\-]\d{4})?)(?:\])?/';
+    
     // error log típico
-    $regexError = '/([A-Za-z]{3} [A-Za-z]{3} \d{1,2} \d{2}:\d{2}:\d{2}(?:\.\d+)?)/';
+    $regexError = '/([A-Za-z]{3} [A-Za-z]{3} \d{1,2} \d{2}:\d{2}:\d{2}(?:\.\d+)?(?: \d{4})?)/';
 
     // helper para converter usando parseTimestamp
     $toTime = fn($s) => parseTimestamp($s);
@@ -521,6 +523,18 @@ function correlacionarEventosLado(string $accessLog, string $errorLog, array $mo
             $grupos[$chave]['tempo'] = $e['tempo'];
         }
     }
+
+    // Filtrar apenas grupos que tenham pelo menos 2 tipos de logs (Correlação Real)
+    // Se houver apenas 1 tipo (ex: só Access Log), removemos do resultado final
+    $grupos = array_filter($grupos, function($g) {
+        $tipos = 0;
+        if (!empty($g['access'])) $tipos++;
+        if (!empty($g['error'])) $tipos++;
+        if (!empty($g['modsec'])) $tipos++;
+        
+        // Retorna true apenas se houver correlação entre fontes distintas
+        return $tipos >= 2;
+    });
 
     // Ordenação final dos grupos
     uasort($grupos, function ($a, $b) {

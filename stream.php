@@ -1,5 +1,8 @@
 <?php
 
+// Inclui funções necessárias (parser ModSec, config, etc)
+require_once __DIR__ . '/functions.php';
+
 header('Content-Type: text/event-stream');
 header('Cache-Control: no-cache');
 header('Connection: keep-alive');
@@ -21,17 +24,15 @@ flush();
 // Evita timeout
 set_time_limit(0);
 
-// Caminhos
-define('LOG_PATH_ACCESS', '/var/log/apache2/access.log');
-define('LOG_PATH_ERROR', '/var/log/apache2/error.log');
-define('LOG_PATH_MODSEC', '/var/log/apache2/modsec_audit.log');
-
 // Estado inicial dos arquivos
 $files = [
     'access' => ['path' => LOG_PATH_ACCESS, 'pos' => 0],
     'error'  => ['path' => LOG_PATH_ERROR, 'pos' => 0],
     'modsec' => ['path' => LOG_PATH_MODSEC, 'pos' => 0]
 ];
+
+// Buffer para acumular fragmentos do ModSecurity até completar um evento
+$modsecBuffer = '';
 
 // Inicializa posições no final do arquivo
 foreach ($files as $key => &$file) {
@@ -80,8 +81,34 @@ while (true) {
                 $file['pos'] = $currentSize;
 
                 if (!empty($content)) {
-                    // Envia dados brutos para o frontend processar
-                    sendEvent($type, $content);
+                    if ($type === 'modsec') {
+                        // Acumula no buffer
+                        $modsecBuffer .= $content;
+
+                        // Verifica se temos eventos completos (terminados em -Z--)
+                        // O padrão de fim é: --[ID]-[Z]--
+                        if (preg_match('/-[Z]--\s*$/m', $modsecBuffer)) {
+                            // Processa o buffer acumulado
+                            $eventos = parseModSecLog($modsecBuffer);
+                            
+                            if (!empty($eventos)) {
+                                // Envia cada evento estruturado individualmente
+                                foreach ($eventos as $id => $secoes) {
+                                    sendEvent('modsec', [
+                                        'id' => $id,
+                                        'secoes' => $secoes,
+                                        'timestamp' => extrairTimestampModSec($secoes)
+                                    ]);
+                                }
+                                // Limpa o buffer pois processamos tudo
+                                // Nota: Em um cenário de altíssimo tráfego, idealmente manteríamos
+                                // o "resto" do buffer se ele não terminasse em Z, mas simplificamos aqui.
+                                $modsecBuffer = '';
+                            }
+                        }
+                    } else {
+                        sendEvent($type, $content);
+                    }
                     $newEvents = true;
                 }
             } else {
@@ -105,31 +132,11 @@ while (true) {
     sleep(1);
 }
 
-/**
-*Sanitização
- */
-
-function sanitizeLogContent($content) {
-
-    //mascaras
-    $patterns = [
-        '/pass(word)?=[^&]*/i' => 'password=***',
-        '/token=[^&]*/i' => 'token=***',
-        '/key=[^&]*/i' => 'key=***',
-        '/auth=[^&]*/i' => 'auth=***',
-        '/authorization: (bearer|basic) .*/i' => 'Authorization: ***'
-    ];
-    
-    return preg_replace(array_keys($patterns), array_values($patterns), $content);
-}
-
 function sendEvent($type, $data) {
-
-    $cleanData = sanitizeLogContent($data);
 
     $payload = json_encode([
         'type' => $type,
-        'content' => $cleanData,
+        'content' => $data,
         'timestamp' => time()
     ]);
     
