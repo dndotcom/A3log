@@ -15,7 +15,7 @@ O objetivo principal é facilitar a investigação de incidentes de segurança, 
 
 ## Requisitos
 
-- **PHP**: Versão 7.4 ou superior (Recomendado PHP 8.x).
+- **PHP**: Versão 8.0 ou superior (Necessário para suporte a tipos união).
 - **Servidor Web**: Apache (até o momento, no futuro a idea é ser possivel para outros, EX: nginx).
 - **Logs**: Acesso de leitura aos arquivos de log do Apache e ModSecurity.
 - **Permissões**: O usuário do servidor web (ex: `www-data`) precisa ter permissão de LEITURA nos arquivos de log.

@@ -10,6 +10,10 @@ declare(strict_types=1);
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/functions.php';
 
+// Aumenta limites para evitar erro 500 (OOM) ao processar logs grandes
+@ini_set('memory_limit', '512M');
+@set_time_limit(300);
+
 // headers anti cache
 @header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
 @header('Pragma: no-cache');
@@ -104,29 +108,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 foreach ($logs as $titulo => $arquivo) {
                     if (empty($exibirLogs[$titulo])) continue;
                     if ($titulo === 'ModSec Log') {
-                        $conteudoRaw = lerLogRaw($arquivo, MAX_LINHAS_LER);
-                        if ($conteudoRaw !== false && $conteudoRaw !== '') {
-                            // Tenta usar cache se disponível
-                            $usarCache = false;
-                            if (file_exists(JSON_PATH)) {
-                                // Se o JSON for mais recente que o log, usa o cache (simplificação)
-                                // Idealmente compararia tamanho/hash, mas mtime ajuda
-                                if (filemtime(JSON_PATH) >= filemtime($arquivo)) {
-                                    $jsonContent = file_get_contents(JSON_PATH);
-                                    $eventos = json_decode($jsonContent, true);
-                                    if (is_array($eventos)) $usarCache = true;
-                                }
-                            }
-
-                            if (!$usarCache) {
-                                $eventos = parseModSecLog($conteudoRaw);
-                                // Salva TODOS os eventos no cache antes de filtrar/cortar
-                                file_put_contents(JSON_PATH, json_encode($eventos), LOCK_EX);
-                            }
-                        } else {
-                            $eventos = [];
-                        }
-
+                        $eventos = obterEventosModSec($arquivo, JSON_PATH);
                         $modSecDataRaw = ['eventos' => $eventos];
 
                         if (!empty($eventos)) {
@@ -153,6 +135,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $conteudo = lerLogRaw($arquivo, MAX_LINHAS_LER);
                         $stats = ['falhas_timestamp' => 0];
                         $conteudoFiltrado = $conteudo !== false ? filtrarPorIP($conteudo, $ip, $dataInicio, $dataFim, $stats) : '';
+                        
+                        unset($conteudo); // Libera memória imediatamente
+
                         $conteudoFiltrado = ordenarLinhasPorTimestamp($conteudoFiltrado);
                         $resultadosFiltro[$titulo] = [
                             'conteudo' => $conteudoFiltrado,
@@ -197,43 +182,32 @@ if (!$filtrar) {
     }
     // ModSec Log
     if ($exibirLogs['ModSec Log']) {
-        $conteudoRaw = lerLogRaw($logs['ModSec Log'], MAX_LINHAS_LER);
-        if ($conteudoRaw !== false) {
-            // Lógica de Cache na visualização padrão
-            $usarCache = false;
-            if (file_exists(JSON_PATH) && file_exists($logs['ModSec Log'])) {
-                if (filemtime(JSON_PATH) >= filemtime($logs['ModSec Log'])) {
-                    $jsonContent = file_get_contents(JSON_PATH);
-                    $eventos = json_decode($jsonContent, true);
-                    if (is_array($eventos)) $usarCache = true;
-                }
-            }
+        $eventos = obterEventosModSec($logs['ModSec Log'], JSON_PATH);
 
-            if (!$usarCache) {
-                $eventos = parseModSecLog($conteudoRaw);
-                // Salva cache completo
-                if (!empty($eventos)) {
-                    file_put_contents(JSON_PATH, json_encode($eventos), LOCK_EX);
-                }
-            }
-
-            $limiteTelaInicial = 50;
-            $totalEventos = count($eventos);
-            
-            // Corta APENAS para exibição, mantendo $eventos original no cache se foi gerado agora
-            $eventosExibicao = $eventos;
-            if ($totalEventos > $limiteTelaInicial) {
-                $eventosExibicao = array_slice($eventos, 0, $limiteTelaInicial, true);
-            }
-            $modSecData = [
-                'eventos' => $eventosExibicao,
-                'total' => $totalEventos,
-                'exibindo' => count($eventosExibicao),
-                'timestamp' => time()
-            ];
+        $limiteTelaInicial = 50;
+        $totalEventos = count($eventos);
+        
+        // Corta APENAS para exibição
+        $eventosExibicao = $eventos;
+        if ($totalEventos > $limiteTelaInicial) {
+            $eventosExibicao = array_slice($eventos, 0, $limiteTelaInicial, true);
         }
+        
+        $modSecData = [
+            'eventos' => $eventosExibicao,
+            'total' => $totalEventos,
+            'exibindo' => count($eventosExibicao),
+            'timestamp' => time()
+        ];
     }
 }
 
-// 5. Carrega a Visualização (View)
+
+// 1. Inicie a contagem de tempo NA PRIMEIRA LINHA do arquivo
+$inicio_time = microtime(true);
+
+// ... (Todo o seu código de include, lógica, processamento do log) ...
+// ... (Sua lógica de cache vs sem cache acontece aqui) ...
+
+// 5. Carrega a Visualização
 require __DIR__ . '/view.php';

@@ -395,29 +395,22 @@ function parseModSecLog(string $cnt): array
     }
 
     // ordenar por timestamp do mais novo para o mais velho
-    $ev_ordenados = [];
+    // Otimização: uksort evita duplicar o array gigante na memória
+    $timestamps = [];
     foreach ($ev as $id => $secoes) {
-        $timestamp = extrairTimestampModSec($secoes);
-        $ev_ordenados[] = [
-            'id' => $id,
-            'secoes' => $secoes,
-            'timestamp' => $timestamp
-        ];
+        $timestamps[$id] = extrairTimestampModSec($secoes);
     }
 
-    usort($ev_ordenados, function ($a, $b) {
-        if ($a['timestamp'] === $b['timestamp']) return 0;
-        if ($a['timestamp'] === 0) return 1;
-        if ($b['timestamp'] === 0) return -1;
-        return $b['timestamp'] <=> $a['timestamp'];
+    uksort($ev, function ($a, $b) use ($timestamps) {
+        $ta = $timestamps[$a];
+        $tb = $timestamps[$b];
+        if ($ta === $tb) return 0;
+        if ($ta === 0) return 1;
+        if ($tb === 0) return -1;
+        return $tb <=> $ta;
     });
 
-    $resultado = [];
-    foreach ($ev_ordenados as $item) {
-        $resultado[$item['id']] = $item['secoes'];
-    }
-
-    return $resultado;
+    return $ev;
 }
 
 
@@ -588,4 +581,41 @@ function ordenarLinhasPorTimestamp(string $cnt): string
         return $p['linha'];
     }, $parsed);
     return implode("\n", $out);
+}
+
+/**
+ * Gerencia a obtenção de eventos do ModSecurity, aplicando a lógica de Cache JSON.
+ * 
+ * @param string $caminhoLog Caminho do arquivo de log bruto
+ * @param string $caminhoJson Caminho do arquivo de cache JSON
+ * @return array Lista de eventos parseados
+ */
+function obterEventosModSec(string $caminhoLog, string $caminhoJson): array
+{
+    if (!file_exists($caminhoLog)) {
+        return [];
+    }
+
+    // 1. Tenta usar cache se disponível e válido
+    if (file_exists($caminhoJson)) {
+        // Se o JSON for mais recente ou igual ao log, usa o cache
+        if (filemtime($caminhoJson) >= filemtime($caminhoLog)) {
+            $jsonContent = file_get_contents($caminhoJson);
+            $eventos = json_decode($jsonContent, true);
+            if (is_array($eventos)) {
+                return $eventos;
+            }
+        }
+    }
+
+    // 2. Se não usou cache, lê o arquivo bruto
+    $conteudoRaw = lerLogRaw($caminhoLog, MAX_LINHAS_LER);
+    if ($conteudoRaw !== false && $conteudoRaw !== '') {
+        $eventos = parseModSecLog($conteudoRaw);
+        // Salva cache para próximas requisições
+        file_put_contents($caminhoJson, json_encode($eventos), LOCK_EX);
+        return $eventos;
+    }
+
+    return [];
 }
